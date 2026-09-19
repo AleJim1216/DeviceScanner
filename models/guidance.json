@@ -1,19 +1,41 @@
 {
   "guidance": {
     "blur": "Hold the camera steady and refocus on the subject.",
-    "label_obstructed": "Uncover the DEMO label and retake so every character is visible.",
+    "label_obstructed": "Uncover the identification label and retake so the text is fully visible.",
     "underexposed": "Add even lighting and retake without deep shadows.",
     "framing": "Part of the device is cut off. Step back so the whole device is in the frame.",
-    "glare_or_overexposed": "Reposition to include the complete required subject.",
+    "glare_or_overexposed": "Move the light or change the camera angle to reduce glare.",
     "needs_review": "Ask a human to review the intended view and visible detail."
   },
   "reasons": {
     "blur": "Focus or motion blur obscures relevant detail",
-    "label_obstructed": "Tape covers part of the temporary DEMO label",
+    "label_obstructed": "Part of the identification label is covered or unreadable",
     "underexposed": "The required subject is too dark to inspect reliably",
     "framing": "Part of the intended subject or label lies outside the frame",
-    "glare_or_overexposed": "Part of the intended subject or label lies outside the frame",
+    "glare_or_overexposed": "Excessive brightness or glare reduces visible subject detail",
     "needs_review": "The intended view or visible detail is uncertain"
+  },
+  "review": {
+    "needs_review": {
+      "reason": "The intended view or visible detail is uncertain",
+      "guidance": "Ask a human to review the intended view and visible detail."
+    },
+    "rear_unclear": {
+      "reason": "The intended connection area is not clearly shown",
+      "guidance": "Ask a human to review the intended view and visible detail."
+    },
+    "brightness": {
+      "reason": "Brightness is elevated, but whether the required detail is unusable is ambiguous",
+      "guidance": "Ask a human to review the intended view and visible detail."
+    },
+    "view_mismatch": {
+      "reason": "The photo content does not match the selected view",
+      "guidance": "Ask a human to review the intended view and visible detail."
+    },
+    "view_uncertain": {
+      "reason": "The intended view is not clear enough to name",
+      "guidance": "Ask a human to review the intended view and visible detail."
+    }
   },
   "order": [
     "blur",

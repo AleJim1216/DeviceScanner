@@ -25,6 +25,7 @@ ios/
 android/
 
 # Local
+data/accounts/
 .env
 .env*.local
 .DS_Store

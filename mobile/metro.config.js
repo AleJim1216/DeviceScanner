@@ -21,12 +21,17 @@ config.server = {
           path: url.slice("/model".length) || "/",
           method: req.method,
           headers,
+          timeout: 180000,
         },
         (proxyRes) => {
           res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
           proxyRes.pipe(res);
         }
       );
+      proxy.setTimeout(180000);
+      proxy.on("timeout", () => {
+        proxy.destroy();
+      });
       proxy.on("error", () => {
         if (!res.headersSent) {
           res.writeHead(502, { "Content-Type": "text/plain" });

@@ -24,12 +24,30 @@ def load_bgr_bytes(payload: bytes) -> np.ndarray:
     return image
 
 
-def _resize(image: np.ndarray) -> np.ndarray:
+def average_hash(image: np.ndarray, size: int = 16) -> np.ndarray:
+    gray = cv2.cvtColor(_resize(image), cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(gray, (size, size), interpolation=cv2.INTER_AREA)
+    return (small > float(small.mean())).astype(np.uint8)
+
+
+def hash_distance(left: np.ndarray, right: np.ndarray) -> int:
+    return int(np.count_nonzero(left.reshape(-1) != right.reshape(-1)))
+
+
+def resize_to_side(image: np.ndarray, max_side: int) -> np.ndarray:
     height, width = image.shape[:2]
-    scale = MAX_SIDE / max(height, width)
+    scale = max_side / max(height, width)
     if scale >= 1:
         return image
     return cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
+
+
+def resize_for_measure(image: np.ndarray) -> np.ndarray:
+    return resize_to_side(image, MAX_SIDE)
+
+
+def _resize(image: np.ndarray) -> np.ndarray:
+    return resize_for_measure(image)
 
 
 def redaction_mask(image: np.ndarray) -> np.ndarray:
@@ -75,6 +93,92 @@ def _orange_mask(image: np.ndarray, redacted: np.ndarray) -> np.ndarray:
     return cv2.morphologyEx(orange.astype(np.uint8), cv2.MORPH_OPEN, kernel).astype(bool)
 
 
+def orange_mask(image: np.ndarray, redacted: np.ndarray | None = None) -> np.ndarray:
+    """Orange/red DEMO-tape stencil used to recolor existing labels."""
+    if redacted is None:
+        redacted = redaction_mask(image)
+    return _orange_mask(image, redacted)
+
+
+def _solidity(region: np.ndarray) -> float:
+    ys, xs = np.where(region)
+    if ys.size < 3:
+        return 0.0
+    hull = cv2.convexHull(np.stack([xs, ys], axis=1))
+    hull_area = float(cv2.contourArea(hull)) if len(hull) >= 3 else float(region.sum())
+    return float(region.sum() / max(hull_area, 1.0))
+
+
+def _tape_mask(image: np.ndarray, redacted: np.ndarray) -> np.ndarray:
+    """Orange tape, or another saturated/pale sticker when orange is absent."""
+    orange = _orange_mask(image, redacted)
+    if float(orange.mean()) >= 0.005:
+        return orange
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    tape = orange.copy()
+
+    colorful = (saturation >= 90) & (value >= 50) & ~redacted
+    min_color = 0.0025 * colorful.size
+    for area, blob_w, blob_h, region in _components(colorful, 0.001):
+        if float(orange[region].mean()) >= 0.45:
+            tape |= region
+            continue
+        if area < min_color:
+            continue
+        aspect = max(blob_w, blob_h) / max(min(blob_w, blob_h), 1)
+        if aspect > 14:
+            continue
+        if _solidity(region) < 0.72:
+            continue
+        tape |= region
+
+    pale = (value >= 165) & (saturation <= 55) & ~redacted
+    pale_min = 0.004 * pale.size
+    pale_max = 0.28 * pale.size
+    height, width = pale.shape
+    band = 2
+    for area, blob_w, blob_h, region in _components(pale, 0.002):
+        if area < pale_min or area > pale_max:
+            continue
+        aspect = max(blob_w, blob_h) / max(min(blob_w, blob_h), 1)
+        if aspect < 1.8 or aspect > 10:
+            continue
+        touches = sum(
+            (
+                bool(region[:band, :].any()),
+                bool(region[-band:, :].any()),
+                bool(region[:, :band].any()),
+                bool(region[:, -band:].any()),
+            )
+        )
+        if touches >= 3:
+            continue
+        if blob_w >= 0.92 * width or blob_h >= 0.92 * height:
+            continue
+        if _solidity(region) < 0.78:
+            continue
+        tape |= region
+
+    kernel = np.ones((3, 3), np.uint8)
+    return cv2.morphologyEx(tape.astype(np.uint8), cv2.MORPH_OPEN, kernel).astype(bool)
+
+
+def _components(mask: np.ndarray, min_frac: float = 0.0004) -> list[tuple]:
+    _count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    min_area = min_frac * mask.size
+    items = []
+    for index in range(1, _count):
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        if area < min_area:
+            continue
+        width = int(stats[index, cv2.CC_STAT_WIDTH])
+        height = int(stats[index, cv2.CC_STAT_HEIGHT])
+        items.append((area, width, height, labels == index))
+    return items
+
+
 def measure(image: np.ndarray) -> dict[str, float]:
     image = _resize(image)
     redacted = redaction_mask(image)
@@ -103,16 +207,21 @@ def measure(image: np.ndarray) -> dict[str, float]:
     else:
         edge_fracs = [0.0, 0.0, 0.0, 0.0]
 
-    orange = _orange_mask(image, redacted)
-    _count, _labels, stats, _ = cv2.connectedComponentsWithStats(orange.astype(np.uint8), 8)
-    blobs = 0
-    if len(stats) > 1:
-        min_blob = 0.0004 * orange.size
-        blobs = int(np.sum(stats[1:, cv2.CC_STAT_AREA] >= min_blob))
+    orange = _tape_mask(image, redacted)
+    orange_blobs = _components(orange)
+    blobs = len(orange_blobs)
+    edges = cv2.Canny(gray, 80, 160)
 
     touches = 0.0
     orange_edge = 0.0
     orange_std = 0.0
+    orange_flat = 0.0
+    orange_text = 0.0
+    ink = 0.0
+    label_aspect = 0.0
+    label_solidity = 0.0
+    label_ink_edge = 0.0
+    blank_tape = 0.0
     if orange.any():
         touches = float(
             max(
@@ -122,7 +231,6 @@ def measure(image: np.ndarray) -> dict[str, float]:
                 orange[:, -band:].mean(),
             )
         )
-        edges = cv2.Canny(gray, 80, 160)
         orange_edge = float(edges[orange].mean() / 255.0)
         orange_std = float(gray[orange].std())
         blurred = cv2.blur(gray.astype(np.float32), (21, 21))
@@ -133,10 +241,42 @@ def measure(image: np.ndarray) -> dict[str, float]:
         orange_flat = float(low.sum() / max(int(orange.sum()), 1))
         orange_text = float(high.sum() / max(int(orange.sum()), 1))
         ink = float(((gray < 90) & orange).sum() / max(int(orange.sum()), 1))
-    else:
-        orange_flat = 0.0
-        orange_text = 0.0
-        ink = 0.0
+
+        kernel = np.ones((5, 5), np.uint8)
+        if orange_blobs:
+            largest = max(orange_blobs, key=lambda item: item[0])
+            _area, blob_w, blob_h, region = largest
+            label_aspect = float(max(blob_w, blob_h) / max(min(blob_w, blob_h), 1))
+            ys, xs = np.where(region)
+            hull = cv2.convexHull(np.stack([xs, ys], axis=1))
+            hull_area = float(cv2.contourArea(hull)) if len(hull) >= 3 else float(region.sum())
+            label_solidity = float(region.sum() / max(hull_area, 1.0))
+            ink_region = (gray < 90) & region
+            border = cv2.dilate(region.astype(np.uint8), kernel).astype(bool) & ~region
+            label_ink_edge = float(((gray < 90) & border).sum() / max(int(ink_region.sum()), 1))
+        for _area, _w, _h, region in orange_blobs:
+            blob_ink = float(((gray < 90) & region).sum() / max(int(region.sum()), 1))
+            if 0.01 <= blob_ink <= 0.15 and int(region.sum()) >= 1500:
+                blank_tape += 1.0
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    io_color = (
+        (hsv[:, :, 0] >= 80)
+        & (hsv[:, :, 0] <= 150)
+        & (hsv[:, :, 1] >= 60)
+        & (hsv[:, :, 2] >= 40)
+        & subject
+        & ~redacted
+    )
+    io_color_frac = float(io_color.mean())
+    subject_edge = float(edges[subject].mean() / 255.0) if int(subject.sum()) > 50 else 0.0
+
+    dark = (gray < 55) & subject & ~redacted
+    port_holes = 0.0
+    for area, blob_w, blob_h, _region in _components(dark, 0.00005):
+        if 40 <= area <= 8000 and 8 <= blob_w <= 160 and 8 <= blob_h <= 80:
+            port_holes += 1.0
+    port_score = subject_edge + 0.002 * port_holes + 5.0 * io_color_frac
 
     margin = 1.0
     touch_sides = 0.0
@@ -171,6 +311,14 @@ def measure(image: np.ndarray) -> dict[str, float]:
         "orange_flat": orange_flat,
         "orange_text": orange_text,
         "ink_frac": ink,
+        "label_aspect": label_aspect,
+        "label_solidity": label_solidity,
+        "label_ink_edge": label_ink_edge,
+        "blank_tape": blank_tape,
+        "port_holes": port_holes,
+        "io_color_frac": io_color_frac,
+        "subject_edge": subject_edge,
+        "port_score": port_score,
         "bbox_margin": margin,
         "touch_sides": touch_sides,
         "subject_frac": float(subject.mean()),

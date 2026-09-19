@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "DeviceScanner",
-    "slug": "devicescanner",
+    "name": "ScanE",
+    "slug": "scane",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,13 +10,13 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "DeviceScanner uses the camera to photograph equipment."
+          "cameraPermission": "ScanE uses the camera to photograph equipment."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "DeviceScanner reads equipment photos you choose to check."
+          "photosPermission": "ScanE reads equipment photos you choose to check."
         }
       ]
     ],
